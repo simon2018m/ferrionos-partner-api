@@ -1,0 +1,705 @@
+openapi: 3.0.3
+info:
+  title: FerrionOS Partner API (Sandbox)
+  version: 0.1.0
+  description: |
+    Read-only API for partners who want FerrionOS gate data in their own systems:
+    security companies, facility managers and estate management platforms.
+
+    **Sandbox:** FerrionOS is in pilot and not yet live at any site. Every example
+    here is mock data.
+
+    **Design rules for this contract**
+    - Read-only. Visits are only ever created or closed at the gate, with live
+      face and fingerprint capture.
+    - No NIN, raw identity records, biometric references, phone numbers or home
+      addresses are returned to partners.
+    - Every response is scoped to the site of the logged-in user.
+    - Money is in kobo (100 kobo = 1 naira). Timestamps are ISO 8601.
+  contact:
+    name: Simon Ode Agbo
+    url: https://github.com/simon2018m/ferrionos-partner-api
+servers:
+  - url: https://sandbox.ferrionos.example
+    description: Placeholder until the Postman mock server exists (Brick B3)
+tags:
+  - name: Auth
+    description: Get an access token
+  - name: Site
+    description: The site you are logged in to
+  - name: Visitors
+    description: Live gate activity
+  - name: Entries
+    description: The visit log
+  - name: Billing
+    description: Verification credit status
+  - name: Devices
+    description: Gate tablet status
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in and get an access token
+      description: Tokens last 8 hours. There is no refresh token, so log in again when a call returns 401.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              role: site_admin
+              code: '0427'
+      responses:
+        '200':
+          description: Logged in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.mock.token
+                user:
+                  id: 7f3c2a10-0000-4000-8000-000000000001
+                  name: Adaeze Okafor
+                  forceId: null
+                  role: site_admin
+                  siteId: c41d9b20-0000-4000-8000-000000000009
+                  siteName: Palm Grove Estate
+        '400':
+          description: Role or code is malformed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: role must be one of officer|admin|guard|site_admin and code must be a 4-digit string
+        '401':
+          description: Wrong PIN
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: Invalid code
+        '429':
+          $ref: '#/components/responses/TooManyAttempts'
+
+  /sites/me:
+    get:
+      tags: [Site]
+      summary: Get your site's profile
+      description: A quick way to confirm a token works.
+      responses:
+        '200':
+          description: The site profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Site'
+              example:
+                id: c41d9b20-0000-4000-8000-000000000009
+                name: Palm Grove Estate
+                address: 12 Palm Grove Avenue, Lekki, Lagos
+                guardLabel: Security Officer
+                industryType: residential
+                staffModuleEnabled: true
+                staffModuleLocked: false
+                isActive: true
+                createdAt: '2026-09-14T08:30:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The token's site no longer exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: Site not found
+
+  /visitors/open:
+    get:
+      tags: [Visitors]
+      summary: List visitors currently on site
+      description: Visitors who have signed in and not yet signed out, newest first.
+      responses:
+        '200':
+          description: Visitors on site now
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/VisitSummary'
+              example:
+                - id: 3b8e1f44-0000-4000-8000-000000000101
+                  entryType: visitor
+                  referenceNumber: FER-000142
+                  visitorName: Tunde Bakare
+                  purpose: Delivery
+                  hostName: House 14
+                  organization: QuickBox Logistics
+                  checkedInAt: '2026-11-07T09:12:00Z'
+                  checkedOutAt: null
+                  verified: true
+                  verificationMethod: phone_linked_nin
+                  stepUpStatus: null
+                  roomNumber: null
+                  expectedCheckoutDate: null
+                - id: 3b8e1f44-0000-4000-8000-000000000102
+                  entryType: visitor
+                  referenceNumber: FER-000143
+                  visitorName: Grace Eze
+                  purpose: Contractor / Maintenance
+                  hostName: Estate Office
+                  organization: null
+                  checkedInAt: '2026-11-07T09:40:00Z'
+                  checkedOutAt: null
+                  verified: false
+                  verificationMethod: unverified_self_report
+                  stepUpStatus: pending
+                  roomNumber: null
+                  expectedCheckoutDate: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /visitors/stats/today:
+    get:
+      tags: [Visitors]
+      summary: Get today's visitor counts
+      description: Counts use the server's calendar day (West Africa Time).
+      responses:
+        '200':
+          description: Today's counts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TodayStats'
+              example:
+                signedInToday: 37
+                signedOutToday: 29
+                currentlyOnSite: 8
+                unverifiedToday: 2
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /entries:
+    get:
+      tags: [Entries]
+      summary: List the visit log
+      description: |
+        Newest first, paginated. Guards only ever receive visits that started or
+        ended today, whatever filters they send. Site admins receive the full history.
+      parameters:
+        - name: limit
+          in: query
+          description: Page size. Default 50, maximum 200.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          description: Number of entries to skip.
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: entryType
+          in: query
+          description: Only staff members' entries, or only visitors'.
+          schema:
+            type: string
+            enum: [member, visitor]
+        - name: verified
+          in: query
+          description: Only identity-verified visits (true) or unverified ones (false).
+          schema:
+            type: boolean
+        - name: stepUpStatus
+          in: query
+          description: Unverified visits awaiting site admin review (pending), or already reviewed (approved).
+          schema:
+            type: string
+            enum: [pending, approved]
+      responses:
+        '200':
+          description: A page of the visit log
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntryPage'
+              example:
+                total: 1284
+                limit: 2
+                offset: 0
+                entries:
+                  - id: 3b8e1f44-0000-4000-8000-000000000102
+                    entryType: visitor
+                    referenceNumber: FER-000143
+                    visitorName: Grace Eze
+                    purpose: Contractor / Maintenance
+                    hostName: Estate Office
+                    organization: null
+                    checkedInAt: '2026-11-07T09:40:00Z'
+                    checkedOutAt: null
+                    verified: false
+                    verificationMethod: unverified_self_report
+                    stepUpStatus: pending
+                    roomNumber: null
+                    expectedCheckoutDate: null
+                    memberName: null
+                    loggedByName: Musa Ibrahim
+                  - id: 3b8e1f44-0000-4000-8000-000000000099
+                    entryType: member
+                    referenceNumber: FER-000140
+                    visitorName: null
+                    purpose: null
+                    hostName: null
+                    organization: null
+                    checkedInAt: '2026-11-07T07:55:00Z'
+                    checkedOutAt: null
+                    verified: true
+                    verificationMethod: null
+                    stepUpStatus: null
+                    roomNumber: null
+                    expectedCheckoutDate: null
+                    memberName: Chidi Nwosu
+                    loggedByName: Musa Ibrahim
+        '400':
+          description: A filter value is invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: entryType must be member or visitor
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /entries/{id}:
+    get:
+      tags: [Entries]
+      summary: Get one visit
+      description: Site admins only. Adds sign-out and review details to the list view.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The visit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntryDetail'
+              example:
+                id: 3b8e1f44-0000-4000-8000-000000000102
+                entryType: visitor
+                referenceNumber: FER-000143
+                visitorName: Grace Eze
+                purpose: Contractor / Maintenance
+                hostName: Estate Office
+                organization: null
+                checkedInAt: '2026-11-07T09:40:00Z'
+                checkedOutAt: '2026-11-07T12:05:00Z'
+                verified: false
+                verificationMethod: unverified_self_report
+                stepUpStatus: approved
+                roomNumber: null
+                expectedCheckoutDate: null
+                memberName: null
+                loggedByName: Musa Ibrahim
+                notes: Plumbing repair at the clubhouse
+                exitCaptured: true
+                stepUpApprovedAt: '2026-11-07T10:02:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No visit with this ID at your site
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error: Entry not found at this site
+
+  /billing/me:
+    get:
+      tags: [Billing]
+      summary: Get verification credit status
+      description: |
+        Site admins receive full figures. Guards receive a reduced view: the share
+        of credit used and a low-credit flag, which turns on at 70%.
+      responses:
+        '200':
+          description: Credit status (shape depends on role)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/BillingAdmin'
+                  - $ref: '#/components/schemas/BillingGuard'
+              examples:
+                siteAdmin:
+                  summary: Returned to a site admin
+                  value:
+                    subscriptionStatus: active
+                    cycleAllowanceKobo: 3000000
+                    cycleAllowanceUsedKobo: 2160000
+                    cycleRemainingKobo: 840000
+                    topupBalanceKobo: 500000
+                    totalAvailableKobo: 1340000
+                    percentUsed: 72
+                    cycleStartAt: '2026-11-01T00:00:00Z'
+                    cycleEndAt: '2026-12-01T00:00:00Z'
+                    hasSavedCard: true
+                    hasActiveSubscription: false
+                guard:
+                  summary: Returned to a guard
+                  value:
+                    percentUsed: 72
+                    lowCredit: true
+                    cycleEndAt: '2026-12-01T00:00:00Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /devices/me:
+    get:
+      tags: [Devices]
+      summary: List gate tablets and whether they are online
+      description: Site admins only. A tablet counts as offline after 5 minutes without contact.
+      responses:
+        '200':
+          description: Every tablet ever seen at this site
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Device'
+              example:
+                - id: 9d2c7e61-0000-4000-8000-00000000a3f2
+                  shortId: a3f2
+                  status: online
+                  firstSeenAt: '2026-09-14T08:31:00Z'
+                  lastSeenAt: '2026-11-07T12:06:40Z'
+                - id: 9d2c7e61-0000-4000-8000-00000000b71c
+                  shortId: b71c
+                  status: offline
+                  firstSeenAt: '2026-10-02T07:10:00Z'
+                  lastSeenAt: '2026-11-06T18:22:15Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Token from POST /auth/login, valid for 8 hours.
+
+  responses:
+    Unauthorized:
+      description: Token missing, malformed or expired
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            missing:
+              summary: No Authorization header
+              value:
+                error: Missing bearer token
+            expired:
+              summary: Expired or malformed token
+              value:
+                error: Invalid or expired token
+    Forbidden:
+      description: Your role cannot call this endpoint
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error: 'Requires one of: site_admin'
+    TooManyAttempts:
+      description: Too many failed logins. Wait before retrying.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error, retryAfterSeconds]
+            properties:
+              error:
+                type: string
+              retryAfterSeconds:
+                type: integer
+          example:
+            error: Too many failed attempts
+            retryAfterSeconds: 24
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+
+    LoginRequest:
+      type: object
+      required: [role, code]
+      properties:
+        role:
+          type: string
+          enum: [guard, site_admin]
+        code:
+          type: string
+          pattern: '^\d{4}$'
+          description: The user's 4-digit PIN, as a string.
+
+    LoginResponse:
+      type: object
+      required: [token, user]
+      properties:
+        token:
+          type: string
+        user:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            name:
+              type: string
+            forceId:
+              type: string
+              nullable: true
+              description: Always null for site users.
+            role:
+              type: string
+              enum: [guard, site_admin]
+            siteId:
+              type: string
+              format: uuid
+            siteName:
+              type: string
+
+    Site:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        address:
+          type: string
+          nullable: true
+        guardLabel:
+          type: string
+          description: What this site calls its gate staff, such as "Front Desk Officer".
+        industryType:
+          type: string
+          enum: [residential, school, corporate, industrial, healthcare, hospitality, other]
+        staffModuleEnabled:
+          type: boolean
+        staffModuleLocked:
+          type: boolean
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+
+    VisitSummary:
+      type: object
+      description: One visit, without NIN, identity records, biometrics, phone or home address.
+      properties:
+        id:
+          type: string
+          format: uuid
+        entryType:
+          type: string
+          enum: [visitor, member]
+          description: member = enrolled staff or resident; visitor = everyone else.
+        referenceNumber:
+          type: string
+          example: FER-000143
+        visitorName:
+          type: string
+          nullable: true
+        purpose:
+          type: string
+          nullable: true
+        hostName:
+          type: string
+          nullable: true
+          description: Who or where the visitor came to see.
+        organization:
+          type: string
+          nullable: true
+        checkedInAt:
+          type: string
+          format: date-time
+        checkedOutAt:
+          type: string
+          format: date-time
+          nullable: true
+        verified:
+          type: boolean
+          description: True when identity was confirmed against the national ID database (always true for members).
+        verificationMethod:
+          type: string
+          nullable: true
+          enum: [phone_linked_nin, nin_direct, unverified_self_report]
+          description: How a visitor's identity was established at the gate. Null for members, who check in by fingerprint.
+        stepUpStatus:
+          type: string
+          nullable: true
+          enum: [pending, approved]
+          description: Only set for unverified visits. pending = awaiting site admin review.
+        roomNumber:
+          type: string
+          nullable: true
+          description: Hospitality sites only.
+        expectedCheckoutDate:
+          type: string
+          format: date
+          nullable: true
+          description: Hospitality sites only.
+
+    EntryListItem:
+      allOf:
+        - $ref: '#/components/schemas/VisitSummary'
+        - type: object
+          properties:
+            memberName:
+              type: string
+              nullable: true
+            loggedByName:
+              type: string
+              nullable: true
+              description: The guard who logged the entry.
+
+    EntryDetail:
+      allOf:
+        - $ref: '#/components/schemas/EntryListItem'
+        - type: object
+          properties:
+            notes:
+              type: string
+              nullable: true
+            exitCaptured:
+              type: boolean
+              description: True when face and fingerprint were captured at sign-out.
+            stepUpApprovedAt:
+              type: string
+              format: date-time
+              nullable: true
+
+    EntryPage:
+      type: object
+      required: [total, limit, offset, entries]
+      properties:
+        total:
+          type: integer
+          description: Matching entries across all pages.
+        limit:
+          type: integer
+        offset:
+          type: integer
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/EntryListItem'
+
+    TodayStats:
+      type: object
+      properties:
+        signedInToday:
+          type: integer
+        signedOutToday:
+          type: integer
+        currentlyOnSite:
+          type: integer
+        unverifiedToday:
+          type: integer
+
+    BillingAdmin:
+      type: object
+      properties:
+        subscriptionStatus:
+          type: string
+        cycleAllowanceKobo:
+          type: integer
+        cycleAllowanceUsedKobo:
+          type: integer
+        cycleRemainingKobo:
+          type: integer
+        topupBalanceKobo:
+          type: integer
+        totalAvailableKobo:
+          type: integer
+        percentUsed:
+          type: integer
+        cycleStartAt:
+          type: string
+          format: date-time
+        cycleEndAt:
+          type: string
+          format: date-time
+        hasSavedCard:
+          type: boolean
+        hasActiveSubscription:
+          type: boolean
+
+    BillingGuard:
+      type: object
+      properties:
+        percentUsed:
+          type: integer
+        lowCredit:
+          type: boolean
+          description: True at 70% or more of the cycle allowance used.
+        cycleEndAt:
+          type: string
+          format: date-time
+
+    Device:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        shortId:
+          type: string
+          description: Last 4 characters of the ID, used as a display name.
+        status:
+          type: string
+          enum: [online, offline]
+        firstSeenAt:
+          type: string
+          format: date-time
+        lastSeenAt:
+          type: string
+          format: date-time
